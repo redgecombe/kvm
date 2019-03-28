@@ -351,6 +351,9 @@
 #define X86_FEATURE_ARCH_CAPABILITIES	(18*32+29) /* IA32_ARCH_CAPABILITIES MSR (Intel) */
 #define X86_FEATURE_SPEC_CTRL_SSBD	(18*32+31) /* "" Speculative Store Bypass Disable */
 
+/* KVM-defined CPU features, CPUID level 0x40000031 (EAX), word 19 */
+#define X86_FEATURE_KVM_XO		(19*32+0) /* KVM EPT based execute only memory support */
+
 /*
  * BUG word(s)
  */
