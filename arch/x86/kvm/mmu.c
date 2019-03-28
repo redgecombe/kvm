@@ -4318,11 +4318,14 @@ static void
 __reset_rsvds_bits_mask(struct kvm_vcpu *vcpu,
 			struct rsvd_bits_validate *rsvd_check,
 			int maxphyaddr, int level, bool nx, bool gbpages,
-			bool pse, bool amd)
+			bool pse, bool amd, bool xo)
 {
 	u64 exb_bit_rsvd = 0;
 	u64 gbpages_bit_rsvd = 0;
 	u64 nonleaf_bit8_rsvd = 0;
+
+	/* Adjust maxphyaddr to include the XO bit if in use */
+	maxphyaddr += xo;
 
 	rsvd_check->bad_mt_xwr = 0;
 
@@ -4408,10 +4411,12 @@ static void reset_rsvds_bits_mask(struct kvm_vcpu *vcpu,
 				  struct kvm_mmu *context)
 {
 	__reset_rsvds_bits_mask(vcpu, &context->guest_rsvd_check,
-				cpuid_maxphyaddr(vcpu), context->root_level,
+				cpuid_maxphyaddr(vcpu),
+				context->root_level,
 				context->nx,
 				guest_cpuid_has(vcpu, X86_FEATURE_GBPAGES),
-				is_pse(vcpu), guest_cpuid_is_amd(vcpu));
+				is_pse(vcpu), guest_cpuid_is_amd(vcpu),
+				guest_cpuid_has(vcpu, X86_FEATURE_KVM_XO));
 }
 
 static void
@@ -4480,7 +4485,7 @@ reset_shadow_zero_bits_mask(struct kvm_vcpu *vcpu, struct kvm_mmu *context)
 				boot_cpu_data.x86_phys_bits,
 				context->shadow_root_level, uses_nx,
 				guest_cpuid_has(vcpu, X86_FEATURE_GBPAGES),
-				is_pse(vcpu), true);
+				is_pse(vcpu), true, false);
 
 	if (!shadow_me_mask)
 		return;
@@ -4509,6 +4514,7 @@ reset_tdp_shadow_zero_bits_mask(struct kvm_vcpu *vcpu,
 {
 	struct rsvd_bits_validate *shadow_zero_check;
 	int i;
+	
 
 	shadow_zero_check = &context->shadow_zero_check;
 
@@ -4517,11 +4523,12 @@ reset_tdp_shadow_zero_bits_mask(struct kvm_vcpu *vcpu,
 					boot_cpu_data.x86_phys_bits,
 					context->shadow_root_level, false,
 					boot_cpu_has(X86_FEATURE_GBPAGES),
-					true, true);
-	else
+					true, true, false);
+	else {
 		__reset_rsvds_bits_mask_ept(shadow_zero_check,
 					    boot_cpu_data.x86_phys_bits,
 					    false);
+	}
 
 	if (!shadow_me_mask)
 		return;
@@ -4777,7 +4784,7 @@ static union kvm_mmu_extended_role kvm_calc_mmu_role_ext(struct kvm_vcpu *vcpu)
 	ext.cr4_pse = !!is_pse(vcpu);
 	ext.cr4_pke = !!kvm_read_cr4_bits(vcpu, X86_CR4_PKE);
 	ext.cr4_la57 = !!kvm_read_cr4_bits(vcpu, X86_CR4_LA57);
-	ext.maxphyaddr = cpuid_maxphyaddr(vcpu);
+	ext.maxphyaddr = cpuid_maxphyaddr(vcpu) + guest_cpuid_has(vcpu, X86_FEATURE_KVM_XO);
 
 	ext.valid = 1;
 
