@@ -631,6 +631,14 @@ u8 kvm_mtrr_get_guest_memory_type(struct kvm_vcpu *vcpu, gfn_t gfn)
 	const int wt_wb_mask = (1 << MTRR_TYPE_WRBACK)
 			       | (1 << MTRR_TYPE_WRTHROUGH);
 
+	/*
+	 * Handle situations where gfn bits are used as permissions bits by
+	 * masking KVMs view of the gfn with the guests physical address bits
+	 * in order to match the guests view of physical address. For normal
+	 * situations this will have no effect.
+	 */
+	gfn &= (1UL << (cpuid_maxphyaddr(vcpu) - PAGE_SHIFT));
+
 	start = gfn_to_gpa(gfn);
 	end = start + PAGE_SIZE;
 
