@@ -47,6 +47,7 @@
 #include <asm/io.h>
 #include <asm/vmx.h>
 #include <asm/kvm_page_track.h>
+#include <asm/traps.h>
 #include "trace.h"
 
 /*
@@ -5373,11 +5374,41 @@ static int make_mmu_pages_available(struct kvm_vcpu *vcpu)
 	return 0;
 }
 
+static int inject_exec_only_pf(struct kvm_vcpu *vcpu, u64 error_code)
+{
+	struct x86_exception fault;
+	int cpl = kvm_x86_ops->get_cpl(vcpu);
+	/* 
+	 * There is an assumption here that if there is an TDP violation for an
+	 * XO memslot, then it must be a read or write fault.
+	 */
+	u16 fault_error_code = X86_PF_PROT | (cpl == 3 ? X86_PF_USER : 0);
+
+	if (!vcpu->arch.gva_available)
+		return 0;
+
+	if (error_code & PFERR_WRITE_MASK) {
+		printk("write\n");
+		fault_error_code |= X86_PF_WRITE;
+	}
+	
+	fault.vector = PF_VECTOR;
+	fault.error_code_valid = true;
+	fault.error_code = fault_error_code;
+	fault.nested_page_fault = false;
+	fault.address = vcpu->arch.gva_val;
+	fault.async_page_fault = true;
+	kvm_inject_page_fault(vcpu, &fault);
+
+	return 1;
+}
+
 int kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gva_t cr2, u64 error_code,
 		       void *insn, int insn_len)
 {
 	int r, emulation_type = 0;
 	enum emulation_result er;
+	unsigned long gva;
 	bool direct = vcpu->arch.mmu->direct_map;
 
 	/* With shadow page tables, fault_address contains a GVA or nGPA.  */
@@ -5394,6 +5425,31 @@ int kvm_mmu_page_fault(struct kvm_vcpu *vcpu, gva_t cr2, u64 error_code,
 	}
 
 	if (r == RET_PF_INVALID) {
+		gfn_t gfn = gpa_to_gfn(cr2);
+		struct kvm_memory_slot *slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
+
+		vcpu->arch.xo_fault = false;
+
+		/*
+		 * Set xo_fault when the fault is a read or write fault so that
+		 * the emulator knows it needs to check page table permissions
+		 * and will inject a fault.
+		 */
+		if (slot && unlikely( (slot->flags & KVM_MEM_EXECONLY)
+			&& !(error_code & PFERR_FETCH_MASK)))
+			vcpu->arch.xo_fault = true;
+
+		/* If memslot is xo, need to inject fault */
+		if (unlikely(vcpu->arch.xo_fault)) {
+			/*
+			 * If not enough information to inject the fault,
+			 * emulate to figure it out and emulate the PF.
+			 */
+			if (!inject_exec_only_pf(vcpu, error_code))
+				goto emulate;
+
+			return 1;
+		}
 		r = vcpu->arch.mmu->page_fault(vcpu, cr2,
 					       lower_32_bits(error_code),
 					       false);
@@ -5439,6 +5495,9 @@ emulate:
 	 * page is not present in memory). In those cases we simply restart the
 	 * guest.
 	 */
+
+	gva = kvm_register_read(vcpu, VCPU_REGS_RIP);
+
 	if (unlikely(insn && !insn_len))
 		return 1;
 

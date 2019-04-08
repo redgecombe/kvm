@@ -290,11 +290,14 @@ static int FNAME(walk_addr_generic)(struct guest_walker *walker,
 	gpa_t pte_gpa;
 	bool have_ad;
 	int offset;
-	u64 walk_nx_mask = 0;
+	u64 walk_mask = 0;
+	u64 walk_nr_mask = 0;
+	bool kvm_xo = guest_cpuid_has(vcpu, X86_FEATURE_KVM_XO);
 	const int write_fault = access & PFERR_WRITE_MASK;
 	const int user_fault  = access & PFERR_USER_MASK;
 	const int fetch_fault = access & PFERR_FETCH_MASK;
 	u16 errcode = 0;
+	
 	gpa_t real_gpa;
 	gfn_t gfn;
 
@@ -305,7 +308,11 @@ retry_walk:
 	have_ad       = PT_HAVE_ACCESSED_DIRTY(mmu);
 
 #if PTTYPE == 64
-	walk_nx_mask = 1ULL << PT64_NX_SHIFT;
+	walk_mask = 1ULL << PT64_NX_SHIFT;
+	if (kvm_xo) {
+		walk_nr_mask = 1UL << cpuid_maxphyaddr(vcpu);
+		walk_mask |= walk_nr_mask;
+	}
 	if (walker->level == PT32E_ROOT_LEVEL) {
 		pte = mmu->get_pdptr(vcpu, (addr >> 30) & 3);
 		trace_kvm_mmu_paging_element(pte, walker->level);
@@ -326,7 +333,7 @@ retry_walk:
 
 	pte_access = ~0;
 	++walker->level;
-
+	
 	do {
 		gfn_t real_gfn;
 		unsigned long host_addr;
@@ -366,7 +373,7 @@ retry_walk:
 					    &walker->pte_writable[walker->level - 1]);
 		if (unlikely(kvm_is_error_hva(host_addr)))
 			goto error;
-
+		
 		ptep_user = (pt_element_t __user *)((void *)host_addr + offset);
 		if (unlikely(__copy_from_user(&pte, ptep_user, sizeof(pte))))
 			goto error;
@@ -378,7 +385,7 @@ retry_walk:
 		 * Inverting the NX it lets us AND it like other
 		 * permission bits.
 		 */
-		pte_access = pt_access & (pte ^ walk_nx_mask);
+		pte_access = pt_access & (pte ^ walk_mask) ;
 
 		if (unlikely(!FNAME(is_present_gpte)(pte)))
 			goto error;
@@ -395,11 +402,23 @@ retry_walk:
 	accessed_dirty = have_ad ? pte_access & PT_GUEST_ACCESSED_MASK : 0;
 
 	/* Convert to ACC_*_MASK flags for struct guest_walker.  */
-	walker->pt_access = FNAME(gpte_access)(pt_access ^ walk_nx_mask);
-	walker->pte_access = FNAME(gpte_access)(pte_access ^ walk_nx_mask);
+	walker->pt_access = FNAME(gpte_access)(pt_access ^ walk_mask);
+	walker->pte_access = FNAME(gpte_access)(pte_access ^ walk_mask);
+
 	errcode = permission_fault(vcpu, mmu, walker->pte_access, pte_pkey, access);
 	if (unlikely(errcode))
 		goto error;
+
+	/*
+	 * KVM XO bit is not checked in permission_fault(), so check it here and
+	 * inject appropriate fault.
+	 */
+	if (kvm_xo && !fetch_fault && (walk_nr_mask & (pte_access ^ walk_nr_mask))) {
+		errcode = PFERR_PRESENT_MASK;
+		if (write_fault)
+			errcode	|= PFERR_WRITE_MASK;
+		goto error;
+	}
 
 	gfn = gpte_to_gfn_lvl(pte, walker->level);
 	gfn += (addr & PT_LVL_OFFSET_MASK(walker->level)) >> PAGE_SHIFT;

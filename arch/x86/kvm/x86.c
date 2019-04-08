@@ -5376,8 +5376,11 @@ static int emulator_read_write_onepage(unsigned long addr, void *val,
 	 * Note, this cannot be used on string operations since string
 	 * operation using rep will only have the initial GPA from the NPF
 	 * occurred.
+	 * 
+	 * If the fault was an XO fault, we need to walk the page tables to
+	 * determin the gva and emulate the PF.
 	 */
-	if (vcpu->arch.gpa_available &&
+	if (!vcpu->arch.xo_fault && vcpu->arch.gpa_available &&
 	    emulator_can_use_gpa(ctxt) &&
 	    (addr & ~PAGE_MASK) == (vcpu->arch.gpa_val & ~PAGE_MASK)) {
 		gpa = vcpu->arch.gpa_val;

@@ -779,6 +779,8 @@ struct kvm_vcpu_arch {
 	bool gva_available;
 	gva_t gva_val;
 
+	bool xo_fault;
+
 	/* be preempted when it's in kernel-mode(cpl=0) */
 	bool preempted_in_kernel;
 
