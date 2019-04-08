@@ -131,6 +131,7 @@ module_param(dbg, bool, 0644);
 
 #define ACC_EXEC_MASK    1
 #define ACC_WRITE_MASK   PT_WRITABLE_MASK
+#define ACC_READ_MASK 	 PT_PRESENT_MASK
 #define ACC_USER_MASK    PT_USER_MASK
 #define ACC_ALL          (ACC_EXEC_MASK | ACC_WRITE_MASK | ACC_USER_MASK)
 
@@ -1523,6 +1524,17 @@ static bool spte_write_protect(u64 *sptep, bool pt_protect)
 	return mmu_spte_update(sptep, spte);
 }
 
+static bool spte_xo_protect(u64 *sptep, bool pt_protect)
+{
+	u64 spte = *sptep;
+
+	spte = spte & ~VMX_EPT_READABLE_MASK;
+	spte = spte & ~VMX_EPT_WRITABLE_MASK;
+
+	return mmu_spte_update(sptep, spte);
+}
+
+
 static bool __rmap_write_protect(struct kvm *kvm,
 				 struct kvm_rmap_head *rmap_head,
 				 bool pt_protect)
@@ -1533,6 +1545,20 @@ static bool __rmap_write_protect(struct kvm *kvm,
 
 	for_each_rmap_spte(rmap_head, &iter, sptep)
 		flush |= spte_write_protect(sptep, pt_protect);
+
+	return flush;
+}
+
+static bool __rmap_xo_protect(struct kvm *kvm,
+				 struct kvm_rmap_head *rmap_head,
+				 bool pt_protect)
+{
+	u64 *sptep;
+	struct rmap_iterator iter;
+	bool flush = false;
+
+	for_each_rmap_spte(rmap_head, &iter, sptep)
+		flush |= spte_xo_protect(sptep, pt_protect);
 
 	return flush;
 }
@@ -2913,8 +2939,15 @@ static int set_spte(struct kvm_vcpu *vcpu, u64 *sptep,
 	else
 		spte |= shadow_nx_mask;
 
+	if (pte_access & ACC_READ_MASK)
+		spte |= 1;
+	else
+		spte &= ~1;		
+
 	if (pte_access & ACC_USER_MASK)
 		spte |= shadow_user_mask;
+	else
+		spte &= ~shadow_user_mask;
 
 	if (level > PT_PAGE_TABLE_LEVEL)
 		spte |= PT_PAGE_SIZE_MASK;
@@ -3138,16 +3171,23 @@ static int __direct_map(struct kvm_vcpu *vcpu, int write, int map_writable,
 	struct kvm_mmu_page *sp;
 	int emulate = 0;
 	gfn_t pseudo_gfn;
+	struct kvm_memory_slot *slot = kvm_vcpu_gfn_to_memslot(vcpu, gfn);
+	unsigned pte_access = ACC_ALL;
+	
+	if (slot && slot->flags & KVM_MEM_EXECONLY)
+		pte_access = ACC_EXEC_MASK;
 
 	if (!VALID_PAGE(vcpu->arch.mmu->root_hpa))
 		return 0;
 
 	for_each_shadow_entry(vcpu, (u64)gfn << PAGE_SHIFT, iterator) {
 		if (iterator.level == level) {
-			emulate = mmu_set_spte(vcpu, iterator.sptep, ACC_ALL,
+			emulate = mmu_set_spte(vcpu, iterator.sptep, pte_access,
 					       write, level, gfn, pfn, prefault,
 					       map_writable);
+			
 			direct_pte_prefetch(vcpu, iterator.sptep);
+
 			++vcpu->stat.pf_fixed;
 			break;
 		}
@@ -5678,6 +5718,45 @@ static bool slot_rmap_write_protect(struct kvm *kvm,
 				    struct kvm_rmap_head *rmap_head)
 {
 	return __rmap_write_protect(kvm, rmap_head, false);
+}
+
+
+static bool slot_rmap_xo_protect(struct kvm *kvm,
+				    struct kvm_rmap_head *rmap_head)
+{
+	return __rmap_xo_protect(kvm, rmap_head, false);
+}
+
+void kvm_mmu_slot_remove_read_write_access(struct kvm *kvm,
+				      struct kvm_memory_slot *memslot)
+{
+	bool flush;
+
+	spin_lock(&kvm->mmu_lock);
+	flush = slot_handle_all_level(kvm, memslot, slot_rmap_xo_protect,
+				      false);
+	spin_unlock(&kvm->mmu_lock);
+
+	/*
+	 * kvm_mmu_slot_remove_write_access() and kvm_vm_ioctl_get_dirty_log()
+	 * which do tlb flush out of mmu-lock should be serialized by
+	 * kvm->slots_lock otherwise tlb flush would be missed.
+	 */
+	lockdep_assert_held(&kvm->slots_lock);
+
+	/*
+	 * We can flush all the TLBs out of the mmu lock without TLB
+	 * corruption since we just change the spte from writable to
+	 * readonly so that we only need to care the case of changing
+	 * spte from present to present (changing the spte from present
+	 * to nonpresent will flush all the TLBs immediately), in other
+	 * words, the only case we care is mmu_spte_update() where we
+	 * haved checked SPTE_HOST_WRITEABLE | SPTE_MMU_WRITEABLE
+	 * instead of PT_WRITABLE_MASK, that means it does not depend
+	 * on PT_WRITABLE_MASK anymore.
+	 */
+	if (flush)
+		kvm_flush_remote_tlbs(kvm);
 }
 
 void kvm_mmu_slot_remove_write_access(struct kvm *kvm,

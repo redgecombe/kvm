@@ -9374,6 +9374,11 @@ static void kvm_mmu_slot_apply_flags(struct kvm *kvm,
 		return;
 	}
 
+	/* Protect XO slot */
+	if (new->flags & KVM_MEM_EXECONLY) {
+		kvm_mmu_slot_remove_read_write_access(kvm, new);
+	}
+
 	/*
 	 * Call kvm_x86_ops dirty logging hooks when they are valid.
 	 *

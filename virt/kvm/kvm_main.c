@@ -864,6 +864,8 @@ static int check_memory_region_flags(const struct kvm_userspace_memory_region *m
 	valid_flags |= KVM_MEM_READONLY;
 #endif
 
+	valid_flags |= KVM_MEM_EXECONLY;
+
 	if (mem->flags & ~valid_flags)
 		return -EINVAL;
 
@@ -1352,6 +1354,11 @@ static bool memslot_is_readonly(struct kvm_memory_slot *slot)
 	return slot->flags & KVM_MEM_READONLY;
 }
 
+static bool memslot_is_execonly(struct kvm_memory_slot *slot)
+{
+	return slot->flags & KVM_MEM_EXECONLY;
+}
+
 static unsigned long __gfn_to_hva_many(struct kvm_memory_slot *slot, gfn_t gfn,
 				       gfn_t *nr_pages, bool write)
 {
@@ -1359,6 +1366,9 @@ static unsigned long __gfn_to_hva_many(struct kvm_memory_slot *slot, gfn_t gfn,
 		return KVM_HVA_ERR_BAD;
 
 	if (memslot_is_readonly(slot) && write)
+		return KVM_HVA_ERR_RO_BAD;
+
+	if (memslot_is_execonly(slot) && write)
 		return KVM_HVA_ERR_RO_BAD;
 
 	if (nr_pages)
