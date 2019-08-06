@@ -3083,6 +3083,9 @@ int kvm_vm_ioctl_check_extension(struct kvm *kvm, long ext)
 		r = kvm_x86_ops->get_nested_state ?
 			kvm_x86_ops->get_nested_state(NULL, 0, 0) : 0;
 		break;
+	case KVM_CAP_EXECONLY_MEM:
+		r = kvm_x86_ops->tdp_xo_supported();
+		break;
 	default:
 		break;
 	}

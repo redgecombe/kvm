@@ -7799,6 +7799,7 @@ static struct kvm_x86_ops vmx_x86_ops __ro_after_init = {
 	.xsaves_supported = vmx_xsaves_supported,
 	.umip_emulated = vmx_umip_emulated,
 	.pt_supported = vmx_pt_supported,
+	.tdp_xo_supported = cpu_has_vmx_ept_execute_only,
 
 	.request_immediate_exit = vmx_request_immediate_exit,
 
