@@ -5098,6 +5098,11 @@ static int handle_ept_violation(struct kvm_vcpu *vcpu)
 	error_code |= (exit_qualification & 0x100) != 0 ?
 	       PFERR_GUEST_FINAL_MASK : PFERR_GUEST_PAGE_MASK;
 
+	if (exit_qualification | EPT_VIOLATION_GVA_LINEAR_VALID) {
+		vcpu->arch.gva_available = true;
+		vcpu->arch.gva_val = vmcs_readl(GUEST_LINEAR_ADDRESS);
+	}
+
 	vcpu->arch.exit_qualification = exit_qualification;
 	return kvm_mmu_page_fault(vcpu, gpa, error_code, NULL, 0);
 }

@@ -775,6 +775,10 @@ struct kvm_vcpu_arch {
 	bool gpa_available;
 	gpa_t gpa_val;
 
+	/* GVA available */
+	bool gva_available;
+	gva_t gva_val;
+
 	/* be preempted when it's in kernel-mode(cpl=0) */
 	bool preempted_in_kernel;
 
